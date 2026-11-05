@@ -19,6 +19,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    androidResources { noCompress += "task" }
 }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
@@ -26,4 +27,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
 }
