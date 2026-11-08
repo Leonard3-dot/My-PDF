@@ -2,9 +2,11 @@ package com.example.pdfreader
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
+import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.view.HapticFeedbackConstants
@@ -34,7 +36,22 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
@@ -45,11 +62,37 @@ import kotlin.math.abs
 
 class MainActivity : ComponentActivity() {
     var keyHandler: ((Int) -> Boolean)? = null
+    private var voiceInstance: VoiceGuide? = null
+    val voice: VoiceGuide get() = voiceInstance ?: VoiceGuide(this).also { voiceInstance = it }
+
+    override fun onDestroy() {
+        voiceInstance?.shutdown()
+        super.onDestroy()
+    }
+    var incoming by mutableStateOf<Uri?>(null)
+
+    @Suppress("DEPRECATION")
+    private fun handle(i: Intent?) {
+        val u: Uri? = when (i?.action) {
+            Intent.ACTION_VIEW -> i.data
+            Intent.ACTION_SEND -> i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            else -> null
+        }
+        if (u != null) incoming = u
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        handle(intent)
         setContent { App(this) }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean =
         if (keyHandler?.invoke(keyCode) == true) true else super.onKeyDown(keyCode, event)
 }
@@ -150,20 +193,43 @@ fun App(act: MainActivity) {
     var dark by remember { mutableStateOf(prefs.getBoolean("dark", true)) }
     var screen by remember { mutableStateOf("lib") }
     var current by remember { mutableStateOf<Book?>(null) }
-    MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+    var autoTour by remember { mutableStateOf(false) }
+    // PDF reçu d'une autre appli (Ouvrir avec / Partager)
+    LaunchedEffect(act.incoming) {
+        val u = act.incoming
+        if (u != null) {
+            act.incoming = null
+            val b = withContext(Dispatchers.IO) { Lib.addPdf(act, u) }
+            if (b != null) {
+                b.opened = System.currentTimeMillis()
+                val l = Lib.load(act)
+                l.add(b)
+                Lib.save(act, l)
+                current = b
+                screen = "reader"
+            }
+        }
+    }
+    AppTheme(dark) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            when (screen) {
+            Crossfade(targetState = screen, animationSpec = tween(300), label = "screen") { s ->
+            when (s) {
                 "reader" -> current?.let { b -> Reader(act, b) { screen = "lib" } }
                 "marks" -> Marks(act, onBack = { screen = "lib" }, onOpen = { b, p ->
                     prefs.edit().putString("pos_${b.id}", "$p,0").apply()
                     current = b; screen = "reader"
                 })
+                "opds" -> OpdsScreen(act) { screen = "lib" }
+                "guide" -> GuideScreen(act, autoTour) { screen = "lib" }
                 else -> Library(
                     act, dark,
                     onTheme = { dark = !dark; prefs.edit().putBoolean("dark", dark).apply() },
                     onOpen = { b -> current = b; screen = "reader" },
-                    onMarks = { screen = "marks" }
+                    onMarks = { screen = "marks" },
+                    onOpds = { screen = "opds" },
+                    onGuide = { a -> autoTour = a; screen = "guide" }
                 )
+            }
             }
         }
     }
@@ -178,15 +244,19 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     val screenH = act.resources.displayMetrics.heightPixels
     val key = book.id
 
-    val opened = remember(book.id) { runCatching { PdfDoc(Lib.file(act, book)) } }
+    var reload by remember { mutableStateOf(0) }
+    val opened = remember(book.id, reload) { runCatching { PdfDoc(Lib.file(act, book)) } }
     val doc = opened.getOrNull()
     DisposableEffect(opened) { onDispose { opened.getOrNull()?.close() } }
 
     var menu by remember { mutableStateOf(true) }
+    var tick by remember { mutableStateOf(0) }
     var auto by remember { mutableStateOf(false) }
     var speed by remember { mutableStateOf(2f) }
     var themeIdx by remember { mutableStateOf(prefs.getInt("theme", 1)) }
     var showBm by remember { mutableStateOf(false) }
+    var noteFor by remember { mutableStateOf<Int?>(null) }
+    var searchOpen by remember { mutableStateOf(false) }
     val bookmarks = remember {
         mutableStateListOf<Int>().apply {
             addAll((prefs.getStringSet("bm_$key", emptySet()) ?: emptySet()).map { it.toInt() }.sorted())
@@ -208,6 +278,7 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     }
 
     BackHandler { onBack() }
+    BackHandler(enabled = searchOpen) { searchOpen = false }
 
     fun handleGesture(e: String) {
         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -305,23 +376,79 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
 
     val th = themes[themeIdx]
 
+    fun addBookmark() {
+        val p = listState.firstVisibleItemIndex
+        if (p !in bookmarks) {
+            bookmarks.add(p); bookmarks.sort()
+            prefs.edit().putStringSet("bm_$key", bookmarks.map { it.toString() }.toSet()).apply()
+        }
+        noteFor = p
+    }
+    fun nextTheme() {
+        themeIdx = (themeIdx + 1) % themes.size
+        prefs.edit().putInt("theme", themeIdx).apply()
+    }
+    fun toggleGestures() {
+        if (gestureOn) {
+            gestureOn = false
+            prefs.edit().putBoolean("gest", false).apply()
+        } else if (ContextCompat.checkSelfPermission(act, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            gestureOn = true
+            prefs.edit().putBoolean("gest", true).apply()
+            if (prefs.getBoolean("vhints", false)) {
+                act.voice.say("Gestes de la main activés. Pointe l'index vers la caméra, puis monte ou descends le doigt pour faire défiler.")
+            }
+        } else camPerm.launch(Manifest.permission.CAMERA)
+    }
+
+    // Mémorise le nombre de pages (progression affichée sur les couvertures)
+    LaunchedEffect(doc) { doc?.let { prefs.edit().putInt("pc_$key", it.pageCount).apply() } }
+
+    // Les commandes se masquent seules après quelques secondes
+    LaunchedEffect(menu, tick, showBm, noteFor) {
+        if (menu && !showBm && noteFor == null && !searchOpen) {
+            delay(5000)
+            menu = false
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(th.bg)) {
         if (doc == null) {
             val secure = opened.exceptionOrNull() is SecurityException
             Column(
-                Modifier.align(Alignment.Center).padding(32.dp),
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(32.dp),
+                verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
-                    if (secure) "Ce PDF est protégé par un mot de passe : pas encore pris en charge."
-                    else "Impossible de lire ce PDF (fichier abîmé ou format non pris en charge).",
-                    color = Color.White
-                )
+                if (secure) {
+                    var pwd by remember { mutableStateOf("") }
+                    var wrong by remember { mutableStateOf(false) }
+                    Text("Ce PDF est protégé par un mot de passe.")
+                    TextField(
+                        value = pwd, onValueChange = { pwd = it; wrong = false },
+                        label = { Text("Mot de passe") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                    if (wrong) Text("Mot de passe incorrect.", color = Color.Red)
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) { Lib.unlock(act, book, pwd) }
+                                if (ok) reload++ else wrong = true
+                            }
+                        },
+                        modifier = Modifier.padding(top = 12.dp)
+                    ) { Text("Déverrouiller") }
+                } else {
+                    Text("Impossible de lire ce PDF (fichier abîmé ou format non pris en charge).")
+                }
                 Button(onClick = onBack, modifier = Modifier.padding(top = 16.dp)) { Text("Retour à la bibliothèque") }
             }
         } else {
             LazyColumn(
                 state = listState,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                     detectTapGestures { o ->
                         val h = size.height
@@ -335,62 +462,149 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
             ) {
                 items(doc.pageCount) { i -> Page(doc, i, widthPx, th.filter) }
             }
-            Text(
-                "${listState.firstVisibleItemIndex + 1}/${doc.pageCount}",
-                color = Color.Gray,
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
-            )
-            if (gestureOn) {
+            val total = maxOf(doc.pageCount, 1)
+            val cur = (listState.firstVisibleItemIndex + 1).coerceIn(1, total)
+            val cs = MaterialTheme.colorScheme
+
+            // poignée de défilement rapide
+            FastScroller(listState, total, Modifier.align(Alignment.CenterEnd))
+
+            // fine barre de progression de lecture
+            Box(
+                Modifier.align(Alignment.TopStart).fillMaxWidth().height(3.dp)
+                    .background(Color.Black.copy(alpha = 0.25f))
+            ) {
+                Box(Modifier.fillMaxWidth(cur.toFloat() / total).fillMaxHeight().background(cs.primary))
+            }
+
+            // pastille de page quand les commandes sont masquées
+            if (!menu) {
                 Text(
-                    poseLabel(gPose), color = Color.Cyan,
-                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                    "$cur / $total", color = Color.White, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(16.dp)
+                        .clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
-            if (menu) {
-                Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), tonalElevation = 6.dp) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Button(onClick = { auto = !auto; if (auto) menu = false }) {
-                                Text(if (auto) "⏸" else "▶")
-                            }
-                            Slider(
-                                value = speed, onValueChange = { speed = it },
-                                valueRange = 0.5f..8f,
-                                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                            )
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            TextButton(onClick = {
-                                themeIdx = (themeIdx + 1) % themes.size
-                                prefs.edit().putInt("theme", themeIdx).apply()
-                            }) { Text(th.name) }
-                            TextButton(onClick = {
-                                val p = listState.firstVisibleItemIndex
-                                if (p !in bookmarks) {
-                                    bookmarks.add(p); bookmarks.sort()
-                                    prefs.edit().putStringSet(
-                                        "bm_$key", bookmarks.map { it.toString() }.toSet()
-                                    ).apply()
-                                }
-                            }) { Text("+ Signet") }
-                            TextButton(onClick = { showBm = true }) { Text("Signets") }
-                            TextButton(onClick = onBack) { Text("Biblio") }
-                        }
-                        TextButton(onClick = {
-                            if (gestureOn) {
-                                gestureOn = false
-                                prefs.edit().putBoolean("gest", false).apply()
-                            } else if (ContextCompat.checkSelfPermission(act, Manifest.permission.CAMERA)
-                                == PackageManager.PERMISSION_GRANTED
-                            ) {
-                                gestureOn = true
-                                prefs.edit().putBoolean("gest", true).apply()
-                            } else camPerm.launch(Manifest.permission.CAMERA)
-                        }) { Text(if (gestureOn) "✋ Gestes : oui" else "✋ Gestes : non") }
+
+            // geste reconnu
+            if (gestureOn) {
+                Text(
+                    poseLabel(gPose), color = Color.Cyan, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                        .clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.6f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+
+            // barre du haut
+            AnimatedVisibility(
+                visible = menu, modifier = Modifier.align(Alignment.TopCenter),
+                enter = fadeIn() + slideInVertically { -it }, exit = fadeOut() + slideOutVertically { -it }
+            ) {
+                Surface(
+                    color = cs.surface.copy(alpha = 0.96f), shadowElevation = 6.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(Modifier.padding(horizontal = 4.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconBtn(Ic.Back) { onBack() }
+                        Text(
+                            book.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
+                        )
+                        IconBtn(
+                            Ic.Bookmark,
+                            tint = if (listState.firstVisibleItemIndex in bookmarks) cs.primary else cs.onSurface
+                        ) { tick++; addBookmark() }
+                        IconBtn(Ic.List) { tick++; showBm = true }
+                        IconBtn(Ic.Search) { tick++; menu = false; searchOpen = true }
                     }
                 }
             }
+
+            // dock du bas
+            AnimatedVisibility(
+                visible = menu, modifier = Modifier.align(Alignment.BottomCenter),
+                enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }
+            ) {
+                Surface(
+                    modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                    shape = RoundedCornerShape(28.dp), color = cs.surface.copy(alpha = 0.96f),
+                    shadowElevation = 12.dp
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("$cur", fontSize = 12.sp, color = cs.onSurfaceVariant)
+                            Slider(
+                                value = cur.toFloat(),
+                                onValueChange = { v ->
+                                    tick++
+                                    scope.launch { listState.scrollToItem((v.toInt() - 1).coerceIn(0, total - 1)) }
+                                },
+                                valueRange = 1f..maxOf(total, 2).toFloat(),
+                                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                            )
+                            Text("$total", fontSize = 12.sp, color = cs.onSurfaceVariant)
+                        }
+                        Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(48.dp).clip(CircleShape).background(cs.primary)
+                                    .clickable { auto = !auto; tick++; if (auto) menu = false },
+                                contentAlignment = Alignment.Center
+                            ) { Ico(if (auto) Ic.Pause else Ic.Play, cs.onPrimary, 24.dp) }
+                            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text("Vitesse de défilement", fontSize = 11.sp, color = cs.onSurfaceVariant)
+                                Slider(value = speed, onValueChange = { speed = it; tick++ }, valueRange = 0.5f..8f)
+                            }
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { nextTheme(); tick++ }.padding(6.dp)
+                            ) {
+                                Box(Modifier.size(28.dp).clip(CircleShape).background(th.bg).border(2.dp, cs.outline, CircleShape))
+                                Text(th.name, fontSize = 10.sp, color = cs.onSurfaceVariant)
+                            }
+                            IconBtn(Ic.Eye, tint = if (gestureOn) cs.primary else cs.onSurfaceVariant) {
+                                tick++; toggleGestures()
+                            }
+                            IconBtn(Ic.Speaker, tint = if (act.voice.speaking) cs.primary else cs.onSurfaceVariant) {
+                                tick++
+                                if (act.voice.speaking) act.voice.stop() else act.voice.say(ReaderTips)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // recherche dans le livre
+            AnimatedVisibility(
+                visible = searchOpen, modifier = Modifier.align(Alignment.BottomCenter),
+                enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }
+            ) {
+                SearchPanel(
+                    act, book,
+                    onGo = { p -> scope.launch { listState.scrollToItem(p) }; searchOpen = false },
+                    onClose = { searchOpen = false }
+                )
+            }
         }
+    }
+
+    noteFor?.let { p ->
+        var txt by remember(p) { mutableStateOf(prefs.getString("note_${key}_$p", "") ?: "") }
+        AlertDialog(
+            onDismissRequest = { noteFor = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.edit().putString("note_${key}_$p", txt).apply(); noteFor = null
+                }) { Text("Enregistrer") }
+            },
+            dismissButton = { TextButton(onClick = { noteFor = null }) { Text("Sans note") } },
+            title = { Text("Note, page ${p + 1}") },
+            text = {
+                TextField(value = txt, onValueChange = { txt = it }, placeholder = { Text("Ta note (facultatif)") })
+            }
+        )
     }
 
     if (showBm) {
@@ -401,11 +615,23 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
             text = {
                 Column {
                     if (bookmarks.isEmpty()) Text("Aucun signet")
-                    bookmarks.forEach { p ->
-                        TextButton(onClick = {
-                            scope.launch { listState.scrollToItem(p) }
-                            showBm = false
-                        }) { Text("Page ${p + 1}") }
+                    bookmarks.toList().forEach { p ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { scope.launch { listState.scrollToItem(p) }; showBm = false },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                val n = prefs.getString("note_${key}_$p", "") ?: ""
+                                Text(if (n.isBlank()) "Page ${p + 1}" else "Page ${p + 1} : $n", maxLines = 2)
+                            }
+                            TextButton(onClick = { showBm = false; noteFor = p }) { Text("✎") }
+                            TextButton(onClick = {
+                                bookmarks.remove(p)
+                                prefs.edit()
+                                    .putStringSet("bm_$key", bookmarks.map { it.toString() }.toSet())
+                                    .remove("note_${key}_$p").apply()
+                            }) { Text("🗑") }
+                        }
                     }
                 }
             }
