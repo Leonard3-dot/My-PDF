@@ -11,47 +11,29 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.ui.graphics.graphicsLayer
-import kotlinx.coroutines.delay
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -241,109 +223,17 @@ object Lib {
 }
 
 @Composable
-fun Cell(act: MainActivity, b: Book, plain: Boolean, rebuild: Int, selected: Boolean, progress: Float, onTap: () -> Unit, onLong: () -> Unit, index: Int = 0, fav: Boolean = false) {
-    var bmp by remember(b.id, plain, rebuild) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(b.id, plain, rebuild) {
-        if (!plain) bmp = withContext(Dispatchers.IO) { Lib.makeCover(act, b) }
-    }
-    val tap by rememberUpdatedState(onTap)
-    val long by rememberUpdatedState(onLong)
-    val shape = RoundedCornerShape(14.dp)
-    val cs = MaterialTheme.colorScheme
-    // entrée en cascade + effet d'appui
-    var appeared by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { delay((index % 9) * 55L); appeared = true }
-    val enter by animateFloatAsState(if (appeared) 1f else 0f, tween(450), label = "cellIn")
-    var pressed by remember { mutableStateOf(false) }
-    val press by animateFloatAsState(
-        if (pressed || selected) 0.94f else 1f, spring(dampingRatio = 0.6f, stiffness = 400f), label = "cellPress"
-    )
-    val checkA by animateFloatAsState(
-        if (selected) 1f else 0f, spring(dampingRatio = 0.5f, stiffness = 500f), label = "check"
-    )
-    Column(
-        Modifier.fillMaxWidth()
-            .graphicsLayer {
-                alpha = enter
-                translationY = (1f - enter) * 48f
-                val sc = (0.9f + 0.1f * enter) * press
-                scaleX = sc
-                scaleY = sc
-            }
-            .pointerInput(b.id) {
-                detectTapGestures(
-                    onPress = { pressed = true; tryAwaitRelease(); pressed = false },
-                    onTap = { tap() },
-                    onLongPress = { long() }
-                )
-            }
-    ) {
-        Box(
-            Modifier.fillMaxWidth().aspectRatio(0.7f).shadow(6.dp, shape).clip(shape)
-                .background(cs.primaryContainer)
-                .then(if (selected) Modifier.border(3.dp, cs.primary, shape) else Modifier)
-        ) {
-            val c = bmp
-            if (c != null) {
-                Image(c.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            } else {
-                Text(
-                    "PDF", color = cs.onPrimaryContainer, fontSize = 22.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            }
-            if (progress > 0f) {
-                Box(
-                    Modifier.align(Alignment.BottomStart).fillMaxWidth().height(4.dp)
-                        .background(Color.Black.copy(alpha = 0.35f))
-                ) {
-                    Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(cs.primary))
-                }
-            }
-            if (fav) {
-                Text(
-                    "♥", color = Color(0xFFFF5C7A), fontSize = 14.sp,
-                    modifier = Modifier.align(Alignment.TopStart).padding(6.dp)
-                        .clip(CircleShape).background(Color.Black.copy(alpha = 0.55f))
-                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                )
-            }
-            if (checkA > 0.01f) {
-                Text(
-                    "✓", color = cs.onPrimary, fontSize = 14.sp,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)
-                        .graphicsLayer {
-                            alpha = checkA.coerceIn(0f, 1f)
-                            scaleX = checkA
-                            scaleY = checkA
-                        }
-                        .clip(CircleShape).background(cs.primary).padding(horizontal = 7.dp, vertical = 2.dp)
-                )
-            }
-        }
-        Text(
-            b.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 12.sp,
-            color = cs.onBackground,
-            modifier = Modifier.padding(top = 6.dp, start = 2.dp, end = 2.dp)
-        )
-    }
-}
-
-@Composable
 fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book) -> Unit, onMarks: () -> Unit, onOpds: () -> Unit, onGuide: (Boolean) -> Unit) {
     val prefs = remember { act.getSharedPreferences("p", 0) }
     val scope = rememberCoroutineScope()
+    val cs = MaterialTheme.colorScheme
     val books = remember { mutableStateListOf<Book>().apply { addAll(Lib.load(act)) } }
     val sel = remember { mutableStateListOf<String>() }
     var filter by remember { mutableStateOf("all") }
     var sort by remember { mutableStateOf(prefs.getString("sort", "title") ?: "title") }
     var query by remember { mutableStateOf("") }
-    var searching by remember { mutableStateOf(false) }
     var rebuild by remember { mutableStateOf(0) }
     var plain by remember { mutableStateOf(prefs.getBoolean("plain", false)) }
-    var shelfMode by remember { mutableStateOf(prefs.getBoolean("shelf", false)) }
-    fun setShelf(v: Boolean) { shelfMode = v; prefs.edit().putBoolean("shelf", v).apply() }
-    var mTitle by remember { mutableStateOf(false) }
     var mSort by remember { mutableStateOf(false) }
     var mMore by remember { mutableStateOf(false) }
     var dOpt by remember { mutableStateOf(false) }
@@ -423,16 +313,24 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
 
     BackHandler(enabled = sel.isNotEmpty()) { sel.clear() }
 
+    // catégories présentes dans la bibliothèque, les plus fréquentes d'abord
+    val allTags = books.flatMap { tagsOf(it.title) }
+        .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key }
+
     val shown = books
-        .filter { query.isBlank() || it.title.contains(query, true) }
+        .filter { query.isBlank() || it.title.contains(query, true) || cleanTitle(it.title).contains(query, true) }
         .let { l ->
             when {
                 filter == "recent" -> l.filter { it.opened > 0 }.sortedByDescending { it.opened }
-                filter == "fav" -> l.filter { it.fav }.sortedBy { it.title.lowercase() }
+                filter == "fav" -> l.filter { it.fav }.sortedBy { cleanTitle(it.title).lowercase() }
+                filter.startsWith("tag:") -> {
+                    val t = filter.removePrefix("tag:")
+                    l.filter { t in tagsOf(it.title) }.sortedBy { cleanTitle(it.title).lowercase() }
+                }
                 else -> when (sort) {
                     "date" -> l.sortedByDescending { it.added }
                     "read" -> l.sortedByDescending { it.opened }
-                    else -> l.sortedBy { it.title.lowercase() }
+                    else -> l.sortedBy { cleanTitle(it.title).lowercase() }
                 }
             }
         }
@@ -441,38 +339,26 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet {
-                Box(
-                    Modifier.fillMaxWidth()
-                        .background(Brush.linearGradient(listOf(Color(0xFF2F5BFF), Color(0xFF00B8D4))))
-                        .padding(24.dp)
-                ) {
-                    Column {
-                        Text(
-                            "PDF", color = Color(0xFF2F5BFF), fontWeight = FontWeight.Bold, fontSize = 18.sp,
-                            modifier = Modifier.clip(RoundedCornerShape(14.dp)).background(Color.White)
-                                .padding(horizontal = 14.dp, vertical = 12.dp)
-                        )
-                        Text(
-                            "My PDF", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 14.dp)
-                        )
-                        Text("${books.size} livre(s) dans ta bibliothèque", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
-                    }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp)) {
+                    Text("My PDF", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = cs.onSurface)
+                    Text(
+                        "${books.size} livre(s)", fontSize = 13.sp, color = cs.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
-                Spacer(Modifier.height(8.dp))
                 NavigationDrawerItem(
-                    icon = { Ico(Ic.Clock) }, label = { Text("Récents") }, selected = filter == "recent",
-                    onClick = { filter = "recent"; setShelf(false); scope.launch { drawer.close() } },
+                    icon = { Ico(Ic.Book) }, label = { Text("Bibliothèque") }, selected = filter == "all",
+                    onClick = { filter = "all"; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
                 NavigationDrawerItem(
-                    icon = { Ico(Ic.Book) }, label = { Text("Bibliothèque") }, selected = filter == "all",
-                    onClick = { filter = "all"; setShelf(false); scope.launch { drawer.close() } },
+                    icon = { Ico(Ic.Clock) }, label = { Text("Récents") }, selected = filter == "recent",
+                    onClick = { filter = "recent"; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
                 NavigationDrawerItem(
                     icon = { Ico(Ic.Bookmark) }, label = { Text("Favoris") }, selected = filter == "fav",
-                    onClick = { filter = "fav"; setShelf(false); scope.launch { drawer.close() } },
+                    onClick = { filter = "fav"; scope.launch { drawer.close() } },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
                 NavigationDrawerItem(
@@ -486,7 +372,7 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
                 NavigationDrawerItem(
-                    icon = { Ico(Ic.Bookmark) }, label = { Text("Marque-pages et notes") }, selected = false,
+                    icon = { Ico(Ic.List) }, label = { Text("Marque-pages et notes") }, selected = false,
                     onClick = { onMarks() },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
@@ -529,17 +415,13 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                         TextButton(onClick = { sel.clear() }) { Text("Annuler") }
                     }
                 } else {
-                    Column(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             IconBtn(Ic.Menu) { scope.launch { drawer.open() } }
                             Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                                Text("My PDF", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "${books.size} livre(s)", style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Text("Bibliothèque", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                                Text("${books.size} livre(s)", style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                             }
-                            IconBtn(Ic.Search) { searching = !searching; if (!searching) query = "" }
                             Box {
                                 IconBtn(Ic.Sort) { mSort = true }
                                 DropdownMenu(expanded = mSort, onDismissRequest = { mSort = false }) {
@@ -557,10 +439,10 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                                     DropdownMenuItem(text = { Text("Importer des livres") }, onClick = {
                                         mMore = false; pickMany.launch(arrayOf("application/pdf"))
                                     })
-                                    DropdownMenuItem(text = { Text(if (plain) "✓ Couverture par défaut" else "Couverture par défaut") }, onClick = {
+                                    DropdownMenuItem(text = { Text(if (plain) "✓ Sans miniature" else "Sans miniature") }, onClick = {
                                         plain = !plain; prefs.edit().putBoolean("plain", plain).apply(); mMore = false
                                     })
-                                    DropdownMenuItem(text = { Text("Reconstruire les couvertures") }, onClick = {
+                                    DropdownMenuItem(text = { Text("Reconstruire les miniatures") }, onClick = {
                                         books.forEach { Lib.cover(act, it).delete() }
                                         rebuild++; mMore = false
                                     })
@@ -574,48 +456,24 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                                 }
                             }
                         }
-                        AnimatedVisibility(visible = searching) {
-                            TextField(
-                                value = query, onValueChange = { query = it },
-                                placeholder = { Text("Rechercher un livre") }, singleLine = true,
-                                leadingIcon = { Ico(Ic.Search, MaterialTheme.colorScheme.onSurfaceVariant, 20.dp) },
-                                trailingIcon = {
-                                    if (query.isNotEmpty()) IconBtn(Ic.Close, MaterialTheme.colorScheme.onSurfaceVariant) { query = "" }
-                                },
-                                shape = RoundedCornerShape(28.dp),
-                                colors = TextFieldDefaults.colors(
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    disabledIndicatorColor = Color.Transparent,
-                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 8.dp, end = 8.dp)
-                            )
-                        }
-                        if (searching && query.isNotBlank()) {
-                            Text(
-                                "${shown.size} résultat(s)", fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 20.dp, top = 6.dp)
-                            )
-                        }
-                        Row(Modifier.padding(start = 12.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Chip("Tous", filter == "all" && !shelfMode) { filter = "all"; setShelf(false) }
-                            Chip("Récents", filter == "recent" && !shelfMode) { filter = "recent"; setShelf(false) }
-                            Chip("Favoris", filter == "fav" && !shelfMode) { filter = "fav"; setShelf(false) }
-                            Chip("Étagère", shelfMode) { setShelf(true) }
+                        SearchField(
+                            query, { query = it },
+                            Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp)
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                .padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Pill("Tous", filter == "all") { filter = "all" }
+                            Pill("Récents", filter == "recent") { filter = "recent" }
+                            Pill("Favoris", filter == "fav") { filter = "fav" }
+                            allTags.forEach { t -> Pill(t, filter == "tag:$t") { filter = "tag:$t" } }
                         }
                     }
                 }
 
-                Crossfade(
-                    targetState = (if (shelfMode && books.isNotEmpty()) 0 else if (shown.isEmpty()) 1 else 2),
-                    animationSpec = tween(350), label = "mode"
-                ) { mode ->
-                if (mode == 0) {
-                    Shelf(act, books.toList()) { b -> if (sel.isNotEmpty()) { if (b.id in sel) sel.remove(b.id) else sel.add(b.id) } else open(b) }
-                } else if (mode == 1) {
+                if (shown.isEmpty()) {
                     Column(
                         Modifier.fillMaxSize().padding(32.dp),
                         verticalArrangement = Arrangement.Center,
@@ -623,7 +481,7 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                     ) {
                         Text(
                             when {
-                                books.isEmpty() -> "Ta bibliothèque est vide"
+                                books.isEmpty() -> "Commence ta bibliothèque"
                                 filter == "fav" && query.isBlank() -> "Aucun favori pour l'instant"
                                 else -> "Aucun résultat"
                             },
@@ -631,43 +489,38 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                         )
                         if (books.isEmpty()) {
                             Text(
-                                "Importe tes PDF pour les retrouver ici, avec leur couverture et ta progression.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
+                                "Importe tes PDF pour les retrouver ici, avec leur miniature et ta progression.",
+                                color = cs.onSurfaceVariant, textAlign = TextAlign.Center,
                                 modifier = Modifier.padding(top = 8.dp)
                             )
-                        } else if (filter == "fav" && query.isBlank()) {
-                            Text(
-                                "Appuie longuement sur un livre, puis sur Favori.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
-                        }
-                        if (books.isEmpty()) {
                             Button(onClick = { pickMany.launch(arrayOf("application/pdf")) }, modifier = Modifier.padding(top = 16.dp)) {
                                 Text("Importer des livres")
                             }
+                        } else if (filter == "fav" && query.isBlank()) {
+                            Text(
+                                "Appuie longuement sur un livre, puis sur Favori.",
+                                color = cs.onSurfaceVariant, textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
                         }
                     }
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(112.dp),
+                        columns = GridCells.Fixed(2),
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(18.dp)
                     ) {
                         items(shown, key = { it.id }) { b ->
-                            Cell(
+                            BookCard(
                                 act, b, plain, rebuild, b.id in sel,
-                                bookProgress(b),
                                 onTap = { if (sel.isNotEmpty()) { if (b.id in sel) sel.remove(b.id) else sel.add(b.id) } else open(b) },
                                 onLong = { if (b.id !in sel) sel.add(b.id) },
-                                index = shown.indexOf(b),
-                                fav = b.fav
+                                index = shown.indexOf(b)
                             )
                         }
                     }
-                }
                 }
             }
             val last = books.filter { it.opened > 0 }.maxByOrNull { it.opened }
@@ -678,14 +531,14 @@ fun Library(act: MainActivity, dark: Boolean, onTheme: () -> Unit, onOpen: (Book
                 exit = fadeOut() + slideOutVertically { it }
             ) {
                 if (last != null) {
-                ExtendedFloatingActionButton(
-                    onClick = { open(last) },
-                    icon = { Ico(Ic.Play, MaterialTheme.colorScheme.onPrimaryContainer, 22.dp) },
-                    text = { Text("Continuer", maxLines = 1) },
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(16.dp)
-                )
+                    ExtendedFloatingActionButton(
+                        onClick = { open(last) },
+                        icon = { Ico(Ic.Play, cs.onPrimary, 22.dp) },
+                        text = { Text("Continuer", maxLines = 1) },
+                        containerColor = cs.primary,
+                        contentColor = cs.onPrimary,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             }
         }
@@ -760,7 +613,7 @@ fun Marks(act: MainActivity, onBack: () -> Unit, onOpen: (Book, Int) -> Unit) {
         LazyColumn {
             items(marks) { (b, p, n) ->
                 Column(Modifier.padding(vertical = 4.dp)) {
-                    TextButton(onClick = { onOpen(b, p) }) { Text("${b.title}  —  page ${p + 1}") }
+                    TextButton(onClick = { onOpen(b, p) }) { Text("${cleanTitle(b.title)}  —  page ${p + 1}") }
                     if (n.isNotBlank()) Text(n, modifier = Modifier.padding(start = 12.dp), fontSize = 14.sp)
                 }
             }
