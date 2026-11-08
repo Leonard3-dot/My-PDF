@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -69,6 +70,12 @@ class MainActivity : ComponentActivity() {
         voiceInstance?.shutdown()
         super.onDestroy()
     }
+
+    override fun onStop() {
+        // les données sont écrites avant que l'app passe en arrière-plan
+        Store.flushSync()
+        super.onStop()
+    }
     var incoming by mutableStateOf<Uri?>(null)
 
     @Suppress("DEPRECATION")
@@ -83,8 +90,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        handle(intent)
+        // Charge la base (et reprend automatiquement les anciennes données au premier lancement)
+        Store.init(this)
+        // L'écran n'est maintenu allumé que dans le lecteur (voir Reader).
+        // Après une rotation, l'intention d'origine ne doit pas être rejouée.
+        if (savedInstanceState == null) handle(intent)
         setContent { App(this) }
     }
 
@@ -191,9 +201,17 @@ fun Page(d: PdfDoc, i: Int, w: Int, f: ColorFilter?) {
 fun App(act: MainActivity) {
     val prefs = remember { act.getSharedPreferences("p", 0) }
     var dark by remember { mutableStateOf(prefs.getBoolean("dark", true)) }
-    var screen by remember { mutableStateOf("lib") }
-    var current by remember { mutableStateOf<Book?>(null) }
-    var autoTour by remember { mutableStateOf(false) }
+    // Ces états survivent à la rotation de l'écran
+    var screen by rememberSaveable { mutableStateOf("lib") }
+    var currentId by rememberSaveable { mutableStateOf<String?>(null) }
+    var autoTour by rememberSaveable { mutableStateOf(false) }
+    val current = remember(currentId) {
+        currentId?.let { id -> Lib.load(act).firstOrNull { it.id == id } }
+    }
+
+    // Nettoie les fichiers temporaires restés après une erreur
+    LaunchedEffect(Unit) { withContext(Dispatchers.IO) { Lib.cleanup(act) } }
+
     // PDF reçu d'une autre appli (Ouvrir avec / Partager)
     LaunchedEffect(act.incoming) {
         val u = act.incoming
@@ -201,11 +219,12 @@ fun App(act: MainActivity) {
             act.incoming = null
             val b = withContext(Dispatchers.IO) { Lib.addPdf(act, u) }
             if (b != null) {
-                b.opened = System.currentTimeMillis()
                 val l = Lib.load(act)
-                l.add(b)
+                // si le PDF est déjà dans la bibliothèque, on rouvre l'existant (pas de doublon)
+                val target = l.firstOrNull { it.id == b.id } ?: b.also { l.add(it) }
+                target.opened = System.currentTimeMillis()
                 Lib.save(act, l)
-                current = b
+                currentId = target.id
                 screen = "reader"
             }
         }
@@ -214,17 +233,23 @@ fun App(act: MainActivity) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Crossfade(targetState = screen, animationSpec = tween(300), label = "screen") { s ->
             when (s) {
-                "reader" -> current?.let { b -> Reader(act, b) { screen = "lib" } }
+                "reader" -> {
+                    val b = current
+                    if (b != null) Reader(act, b) { screen = "lib" }
+                    else LaunchedEffect(Unit) { screen = "lib" }
+                }
                 "marks" -> Marks(act, onBack = { screen = "lib" }, onOpen = { b, p ->
-                    prefs.edit().putString("pos_${b.id}", "$p,0").apply()
-                    current = b; screen = "reader"
+                    b.page = p
+                    b.offset = 0
+                    Store.saveSoon()
+                    currentId = b.id; screen = "reader"
                 })
                 "opds" -> OpdsScreen(act) { screen = "lib" }
                 "guide" -> GuideScreen(act, autoTour) { screen = "lib" }
                 else -> Library(
                     act, dark,
                     onTheme = { dark = !dark; prefs.edit().putBoolean("dark", dark).apply() },
-                    onOpen = { b -> current = b; screen = "reader" },
+                    onOpen = { b -> currentId = b.id; screen = "reader" },
                     onMarks = { screen = "marks" },
                     onOpds = { screen = "opds" },
                     onGuide = { a -> autoTour = a; screen = "guide" }
@@ -242,7 +267,22 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     val listState = rememberLazyListState()
     val widthPx = act.resources.displayMetrics.widthPixels
     val screenH = act.resources.displayMetrics.heightPixels
-    val key = book.id
+
+    // L'écran reste allumé uniquement pendant la lecture
+    DisposableEffect(Unit) {
+        act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { act.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
+
+    // Séance de lecture : enregistrée à la sortie (base des futures statistiques)
+    DisposableEffect(book.id) {
+        val t0 = System.currentTimeMillis()
+        val p0 = book.page
+        onDispose {
+            val sec = ((System.currentTimeMillis() - t0) / 1000).toInt().coerceAtMost(7200)
+            if (sec >= 5) Store.addSession(ReadSession(book.id, t0, sec, p0, book.page))
+        }
+    }
 
     var reload by remember { mutableStateOf(0) }
     val opened = remember(book.id, reload) { runCatching { PdfDoc(Lib.file(act, book)) } }
@@ -258,9 +298,7 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     var noteFor by remember { mutableStateOf<Int?>(null) }
     var searchOpen by remember { mutableStateOf(false) }
     val bookmarks = remember {
-        mutableStateListOf<Int>().apply {
-            addAll((prefs.getStringSet("bm_$key", emptySet()) ?: emptySet()).map { it.toInt() }.sorted())
-        }
+        mutableStateListOf<Int>().apply { addAll(book.marks.map { it.page }.sorted()) }
     }
 
     val view = LocalView.current
@@ -300,8 +338,10 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     // Reprise de lecture
     LaunchedEffect(doc) {
         if (doc != null) {
-            val pos = (prefs.getString("pos_$key", "0,0") ?: "0,0").split(",")
-            listState.scrollToItem(pos[0].toInt(), pos[1].toInt())
+            listState.scrollToItem(
+                book.page.coerceIn(0, maxOf(doc.pageCount - 1, 0)),
+                book.offset.coerceAtLeast(0)
+            )
         }
     }
     // Sauvegarde de la position
@@ -310,7 +350,9 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
             snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
                 .collectLatest { (i, o) ->
                     delay(500)
-                    prefs.edit().putString("pos_$key", "$i,$o").apply()
+                    book.page = i
+                    book.offset = o
+                    Store.saveSoon()
                 }
         }
     }
@@ -380,7 +422,8 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
         val p = listState.firstVisibleItemIndex
         if (p !in bookmarks) {
             bookmarks.add(p); bookmarks.sort()
-            prefs.edit().putStringSet("bm_$key", bookmarks.map { it.toString() }.toSet()).apply()
+            book.marks.add(BookMark(p, ""))
+            Store.saveSoon()
         }
         noteFor = p
     }
@@ -402,7 +445,12 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     }
 
     // Mémorise le nombre de pages (progression affichée sur les couvertures)
-    LaunchedEffect(doc) { doc?.let { prefs.edit().putInt("pc_$key", it.pageCount).apply() } }
+    LaunchedEffect(doc) {
+        doc?.let {
+            book.pages = it.pageCount
+            Store.saveSoon()
+        }
+    }
 
     // Les commandes se masquent seules après quelques secondes
     LaunchedEffect(menu, tick, showBm, noteFor) {
@@ -591,12 +639,15 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
     }
 
     noteFor?.let { p ->
-        var txt by remember(p) { mutableStateOf(prefs.getString("note_${key}_$p", "") ?: "") }
+        var txt by remember(p) { mutableStateOf(book.marks.firstOrNull { it.page == p }?.note ?: "") }
         AlertDialog(
             onDismissRequest = { noteFor = null },
             confirmButton = {
                 TextButton(onClick = {
-                    prefs.edit().putString("note_${key}_$p", txt).apply(); noteFor = null
+                    val m = book.marks.firstOrNull { it.page == p }
+                    if (m != null) m.note = txt else book.marks.add(BookMark(p, txt))
+                    Store.saveSoon()
+                    noteFor = null
                 }) { Text("Enregistrer") }
             },
             dismissButton = { TextButton(onClick = { noteFor = null }) { Text("Sans note") } },
@@ -621,15 +672,14 @@ fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
                                 onClick = { scope.launch { listState.scrollToItem(p) }; showBm = false },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                val n = prefs.getString("note_${key}_$p", "") ?: ""
+                                val n = book.marks.firstOrNull { it.page == p }?.note ?: ""
                                 Text(if (n.isBlank()) "Page ${p + 1}" else "Page ${p + 1} : $n", maxLines = 2)
                             }
                             TextButton(onClick = { showBm = false; noteFor = p }) { Text("✎") }
                             TextButton(onClick = {
                                 bookmarks.remove(p)
-                                prefs.edit()
-                                    .putStringSet("bm_$key", bookmarks.map { it.toString() }.toSet())
-                                    .remove("note_${key}_$p").apply()
+                                book.marks.removeAll { it.page == p }
+                                Store.saveSoon()
                             }) { Text("🗑") }
                         }
                     }

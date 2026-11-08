@@ -149,13 +149,7 @@ fun ShelfCover(act: MainActivity, b: Book, w: Dp, progress: Float, onClick: () -
 
 @Composable
 fun Shelf(act: MainActivity, books: List<Book>, onOpen: (Book) -> Unit) {
-    val prefs = remember { act.getSharedPreferences("p", 0) }
-
-    fun progress(b: Book): Float {
-        val pc = prefs.getInt("pc_${b.id}", 0)
-        val idx = (prefs.getString("pos_${b.id}", "0,0") ?: "0,0").split(",")[0].toIntOrNull() ?: 0
-        return if (pc > 1 && b.opened > 0) ((idx + 1).toFloat() / pc).coerceIn(0f, 1f) else 0f
-    }
+    fun progress(b: Book): Float = bookProgress(b)
 
     val recent = books.filter { it.opened > 0 }.sortedByDescending { it.opened }.take(3)
     val ordered = books.sortedWith(compareByDescending<Book> { it.opened }.thenBy { it.title.lowercase() })
@@ -165,7 +159,7 @@ fun Shelf(act: MainActivity, books: List<Book>, onOpen: (Book) -> Unit) {
 
         fun hash(b: Book) = b.id.hashCode() and 0x7fffffff
         fun spineW(b: Book): Float {
-            val pc = prefs.getInt("pc_${b.id}", 0)
+            val pc = b.pages
             return if (pc > 0) 24f + (pc.coerceAtMost(400) / 400f) * 20f else 26f + (hash(b) % 12)
         }
 
