@@ -229,7 +229,7 @@ fun App(act: MainActivity) {
             }
         }
     }
-    AppTheme(dark) {
+    ModernTheme(dark) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Crossfade(targetState = screen, animationSpec = tween(300), label = "screen") { s ->
             when (s) {
@@ -261,7 +261,7 @@ fun App(act: MainActivity) {
 }
 
 @Composable
-fun Reader(act: MainActivity, book: Book, onBack: () -> Unit) {
+fun ReaderOld(act: MainActivity, book: Book, onBack: () -> Unit) {
     val prefs = remember { act.getSharedPreferences("p", 0) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
