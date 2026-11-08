@@ -20,6 +20,12 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     androidResources { noCompress += "task" }
+    packaging {
+        resources.excludes += setOf(
+            "META-INF/DEPENDENCIES", "META-INF/LICENSE", "META-INF/LICENSE.txt",
+            "META-INF/NOTICE", "META-INF/NOTICE.txt", "META-INF/AL2.0", "META-INF/LGPL2.1"
+        )
+    }
 }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
@@ -31,4 +37,5 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }
